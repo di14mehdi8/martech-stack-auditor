@@ -8,9 +8,9 @@ load_dotenv()
 
 def get_api_key():
     try:
-	return st.secrets("GROQ_API_KEY")
+    return st.secrets("GROQ_API_KEY")
     except:
-	return os.getenv("GROQ_API_KEY")
+    return os.getenv("GROQ_API_KEY")
 
 import streamlit as st
 client = Groq(api_key=get_api_key)
