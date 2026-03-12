@@ -14,8 +14,8 @@ def create_radar_chart(scores):
         theta=categories,
         fill='toself',
         fillcolor='rgba(99, 110, 250, 0.15)',
-        line=dict(color='636EFA_1', width=2),
-        marker=dict(size=8, color='636EFA_1'),
+        line=dict(color='#636EFA', width=2),
+        marker=dict(size=8, color='#636EFA'),
         name='Your Stack'
     ))
 
@@ -25,7 +25,7 @@ def create_radar_chart(scores):
         r=benchmark_values,
         theta=categories,
         fill='none',
-        line=dict(color='00CC96_1', width=2, dash='dash'),
+        line=dict(color='#00CC96', width=2, dash='dash'),
         marker=dict(size=0),
         name='Industry Benchmark (7/10)'
     ))
@@ -36,7 +36,7 @@ def create_radar_chart(scores):
                 visible=True,
                 range=[0, 10],
                 tickfont=dict(size=10, color="#888"),
-                gridcolor="E0E0E0_1"
+                gridcolor="#E0E0E0"
             ),
             angularaxis=dict(
                 tickfont=dict(size=12, color="#333")
@@ -63,13 +63,13 @@ def create_radar_chart(scores):
 def create_score_gauge(score, title):
     """Creates a single gauge chart for a score."""
     if score >= 7:
-        color = "00CC96_1"
+        color = "#00CC96"
         bar_color = "rgba(0,204,150,0.3)"
     elif score >= 5:
-        color = "FFA15A_1"
+        color = "#FFA15A"
         bar_color = "rgba(255,161,90,0.3)"
     else:
-        color = "EF553B_1"
+        color = "#EF553B"
         bar_color = "rgba(239,85,59,0.3)"
 
     fig = go.Figure(go.Indicator(
@@ -112,7 +112,7 @@ def create_bar_comparison(data_points, benchmarks):
         x=values,
         orientation='h',
         name='Your Data',
-        marker_color='636EFA_1',
+        marker_color='#636EFA',
         text=[f"{v}" for v in values],
         textposition='outside'
     ))
@@ -134,7 +134,7 @@ def create_bar_comparison(data_points, benchmarks):
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        xaxis=dict(gridcolor="F0F0F0_1"),
+        xaxis=dict(gridcolor="#F0F0F0"),
         yaxis=dict(autorange="reversed")
     )
 

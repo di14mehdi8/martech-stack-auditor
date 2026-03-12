@@ -1,5 +1,6 @@
 import os
 import json
+import streamlit as st
 from dotenv import load_dotenv
 from groq import Groq
 from config import BENCHMARKS
@@ -12,8 +13,7 @@ def get_api_key():
     except:
         return os.getenv("GROQ_API_KEY")
 
-import streamlit as st
-client = Groq(api_key=get_api_key)
+client = Groq(api_key=get_api_key())
 
 def call_llm(prompt, system="You are a senior martech consultant who has audited 200+ marketing technology stacks."):
     response = client.chat.completions.create(
