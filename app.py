@@ -1,9 +1,24 @@
 import streamlit as st
 import re
 import time
+import logging
+from datetime import datetime
+from io import BytesIO
 from config import STACK_DEFINITION, BENCHMARKS
 from agents import run_full_audit, format_stack_data
 from charts import create_radar_chart, create_score_gauge, create_bar_comparison
+
+# ReportLab — PDF generation
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    HRFlowable, ListFlowable, ListItem, PageBreak
+)
+from reportlab.platypus.flowables import Image as RLImage
+from reportlab.pdfgen import canvas as pdf_canvas
 
 # ============================================
 # PAGE CONFIG
@@ -312,6 +327,10 @@ if "audit_running" not in st.session_state:
     st.session_state.audit_running = False
 if "stack_data" not in st.session_state:
     st.session_state.stack_data = {}
+if "generation_time" not in st.session_state:
+    st.session_state.generation_time = None
+if "pdf_cache" not in st.session_state:
+    st.session_state.pdf_cache = None
 
 # ============================================
 # HELPERS
@@ -340,6 +359,275 @@ def score_pill(score):
     if score >= 7: return '<span class="pill pill-green">Healthy</span>'
     elif score >= 5: return '<span class="pill pill-yellow">Needs Attention</span>'
     return '<span class="pill pill-red">Critical</span>'
+
+def format_elapsed(seconds):
+    if seconds >= 60:
+        m = int(seconds // 60)
+        s = int(seconds % 60)
+        return f"{m}m {s}s"
+    return f"{seconds:.1f}s"
+
+def strip_markdown(text: str) -> str:
+    """Remove markdown syntax, preserving plain text and emojis."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    text = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', text)
+    text = re.sub(r'^[-*_]{3,}$', '', text, flags=re.MULTILINE)
+    return text.strip()
+
+
+# ============================================
+# PDF GENERATION
+# ============================================
+
+class PageNumCanvas(pdf_canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        pdf_canvas.Canvas.__init__(self, *args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        num_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self._draw_footer(num_pages)
+            pdf_canvas.Canvas.showPage(self)
+        pdf_canvas.Canvas.save(self)
+
+    def _draw_footer(self, page_count):
+        self.saveState()
+        self.setFont("Helvetica", 8)
+        self.setFillColor(colors.HexColor("#94a3b8"))
+        self.setStrokeColor(colors.HexColor("#e2e8f0"))
+        self.setLineWidth(0.5)
+        self.line(72, 52, letter[0] - 72, 52)
+        self.drawString(72, 38, f"Page {self._pageNumber} of {page_count}")
+        self.drawRightString(
+            letter[0] - 72, 38,
+            f"MarTech Stack Auditor — {datetime.now().strftime('%B %d, %Y')}"
+        )
+        self.restoreState()
+
+
+def generate_pdf_report(results, score_map, overall_score, stack_data, generation_time_str):
+    """Generate a complete PDF audit report. Returns a BytesIO buffer."""
+    buffer = BytesIO()
+    page_width = letter[0] - 144  # 6.5 inches usable
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=72, leftMargin=72,
+        topMargin=72, bottomMargin=72,
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        'CoverTitle', parent=styles['Title'],
+        fontSize=28, textColor=colors.HexColor('#0f172a'),
+        spaceAfter=12, fontName='Helvetica-Bold', alignment=1,
+    )
+    subtitle_style = ParagraphStyle(
+        'CoverSubtitle', parent=styles['Normal'],
+        fontSize=14, textColor=colors.HexColor('#64748b'),
+        spaceAfter=8, fontName='Helvetica', alignment=1,
+    )
+    meta_style = ParagraphStyle(
+        'Meta', parent=styles['Normal'],
+        fontSize=9, textColor=colors.HexColor('#94a3b8'),
+        spaceAfter=4, fontName='Helvetica', alignment=1,
+    )
+    h1_style = ParagraphStyle(
+        'H1', parent=styles['Heading1'],
+        fontSize=16, textColor=colors.HexColor('#0f172a'),
+        spaceBefore=16, spaceAfter=8, fontName='Helvetica-Bold',
+    )
+    h2_style = ParagraphStyle(
+        'H2', parent=styles['Heading2'],
+        fontSize=12, textColor=colors.HexColor('#1e293b'),
+        spaceBefore=10, spaceAfter=5, fontName='Helvetica-Bold',
+    )
+    body_style = ParagraphStyle(
+        'Body', parent=styles['Normal'],
+        fontSize=10, textColor=colors.HexColor('#334155'),
+        spaceAfter=5, leading=15, fontName='Helvetica',
+    )
+    caption_style = ParagraphStyle(
+        'Caption', parent=styles['Normal'],
+        fontSize=8, textColor=colors.HexColor('#94a3b8'),
+        spaceAfter=8, fontName='Helvetica', alignment=1,
+    )
+
+    story = []
+
+    # ===== COVER PAGE =====
+    story.append(Spacer(1, 1.8 * inch))
+    story.append(Paragraph("Marketing Audit Report", title_style))
+    story.append(Spacer(1, 0.2 * inch))
+    story.append(Paragraph("MarTech Stack — Comprehensive Analysis", subtitle_style))
+    story.append(Spacer(1, 0.4 * inch))
+    story.append(HRFlowable(width=page_width, thickness=1, color=colors.HexColor('#e2e8f0')))
+    story.append(Spacer(1, 0.3 * inch))
+    story.append(Paragraph(f"Generated on {datetime.now().strftime('%B %d, %Y')}", meta_style))
+    story.append(Paragraph(f"Generation time: {generation_time_str}", meta_style))
+    story.append(Paragraph(f"Overall Stack Health Score: {overall_score}/10", meta_style))
+    story.append(Spacer(1, 2.5 * inch))
+    story.append(HRFlowable(width=page_width, thickness=0.5, color=colors.HexColor('#e2e8f0')))
+    story.append(Spacer(1, 0.15 * inch))
+    story.append(Paragraph(
+        "Powered by MarTech Stack Auditor · AI-powered audit across 6 critical dimensions",
+        meta_style
+    ))
+    story.append(PageBreak())
+
+    # ===== EXECUTIVE SUMMARY =====
+    story.append(Paragraph("Executive Summary", h1_style))
+    story.append(HRFlowable(width=page_width, thickness=0.5, color=colors.HexColor('#e2e8f0')))
+    story.append(Spacer(1, 0.15 * inch))
+    if "executive_summary" in results and results["executive_summary"]["status"] == "success":
+        for line in results["executive_summary"]["output"].split('\n'):
+            line = line.strip()
+            if line:
+                story.append(Paragraph(strip_markdown(line), body_style))
+    story.append(Spacer(1, 0.3 * inch))
+
+    # ===== KEY METRICS TABLE =====
+    story.append(Paragraph("Score Summary", h1_style))
+    story.append(HRFlowable(width=page_width, thickness=0.5, color=colors.HexColor('#e2e8f0')))
+    story.append(Spacer(1, 0.15 * inch))
+
+    table_data = [['Dimension', 'Score', 'Status']]
+    table_data.append([
+        'Overall Stack Health', f"{overall_score}/10",
+        'Healthy' if overall_score >= 7 else ('Needs Attention' if overall_score >= 5 else 'Critical')
+    ])
+    for name, score in score_map.items():
+        status = 'Healthy' if score >= 7 else ('Needs Attention' if score >= 5 else 'Critical')
+        table_data.append([name, f"{score}/10", status])
+
+    col_widths = [page_width * 0.5, page_width * 0.2, page_width * 0.3]
+    metrics_table = Table(table_data, colWidths=col_widths)
+    metrics_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0f172a')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 10),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+        ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('PADDING', (0, 0), (-1, -1), 8),
+        ('FONTNAME', (0, 1), (0, 1), 'Helvetica-Bold'),
+    ]))
+    story.append(metrics_table)
+    story.append(Spacer(1, 0.3 * inch))
+
+    # ===== CHARTS =====
+    story.append(Paragraph("Visual Analysis", h1_style))
+    story.append(HRFlowable(width=page_width, thickness=0.5, color=colors.HexColor('#e2e8f0')))
+    story.append(Spacer(1, 0.15 * inch))
+
+    try:
+        radar_fig = create_radar_chart(score_map)
+        radar_bytes = radar_fig.to_image(format='png', width=800, height=500, scale=1.5)
+        radar_buf = BytesIO(radar_bytes)
+        chart_h = page_width * 500 / 800
+        story.append(RLImage(radar_buf, width=page_width, height=chart_h))
+        story.append(Paragraph("Stack Health Radar — Your scores vs. Industry Benchmark (7/10)", caption_style))
+        story.append(Spacer(1, 0.2 * inch))
+    except Exception:
+        logging.exception("Radar chart export failed")
+
+    if stack_data:
+        try:
+            comparison_data = {
+                "Email Open Rate (%)": stack_data.get("campaigns", {}).get("avg_open_rate", 0),
+                "Email Click Rate (%)": stack_data.get("campaigns", {}).get("avg_click_rate", 0),
+                "Bounce Rate (%)": stack_data.get("analytics", {}).get("bounce_rate", 0),
+                "Identity Resolution (%)": stack_data.get("cdp", {}).get("identity_resolution_rate", 0),
+                "Data Completeness (%)": stack_data.get("crm", {}).get("contacts_with_email", 0),
+            }
+            comparison_benchmarks = {
+                "Email Open Rate (%)": {"average": BENCHMARKS["email_open_rate"]["good"]},
+                "Email Click Rate (%)": {"average": BENCHMARKS["email_click_rate"]["good"]},
+                "Bounce Rate (%)": {"average": BENCHMARKS["bounce_rate"]["good"]},
+                "Identity Resolution (%)": {"average": BENCHMARKS["identity_resolution"]["good"]},
+                "Data Completeness (%)": {"average": BENCHMARKS["data_completeness_email"]["good"]},
+            }
+            bar_fig = create_bar_comparison(comparison_data, comparison_benchmarks)
+            bar_bytes = bar_fig.to_image(format='png', width=700, height=350, scale=1.5)
+            bar_buf = BytesIO(bar_bytes)
+            bar_h = page_width * 350 / 700
+            story.append(RLImage(bar_buf, width=page_width, height=bar_h))
+            story.append(Paragraph("Key Metrics vs. Industry Benchmarks", caption_style))
+            story.append(Spacer(1, 0.2 * inch))
+        except Exception:
+            logging.exception("Bar chart export failed")
+
+    story.append(PageBreak())
+
+    # ===== DETAILED FINDINGS =====
+    story.append(Paragraph("Detailed Findings", h1_style))
+    story.append(HRFlowable(width=page_width, thickness=0.5, color=colors.HexColor('#e2e8f0')))
+
+    agent_keys_pdf = ["data_quality", "integration", "performance", "compliance", "optimization", "redundancy"]
+    for key in agent_keys_pdf:
+        if key not in results or results[key]["status"] != "success":
+            continue
+        agent_data = results[key]
+        story.append(Spacer(1, 0.25 * inch))
+        story.append(Paragraph(strip_markdown(agent_data['label']), h2_style))
+
+        bullet_items = []
+        for line in agent_data["output"].split('\n'):
+            line_stripped = line.strip()
+            if not line_stripped:
+                if bullet_items:
+                    story.append(ListFlowable(
+                        [ListItem(Paragraph(item, body_style), leftIndent=20) for item in bullet_items],
+                        bulletType='bullet', bulletColor=colors.HexColor('#6366f1'),
+                    ))
+                    bullet_items = []
+                story.append(Spacer(1, 0.04 * inch))
+                continue
+
+            if re.match(r'^[-*•]\s', line_stripped):
+                bullet_items.append(strip_markdown(line_stripped[2:]))
+            elif re.match(r'^\d+\.\s', line_stripped):
+                bullet_items.append(strip_markdown(re.sub(r'^\d+\.\s*', '', line_stripped)))
+            else:
+                if bullet_items:
+                    story.append(ListFlowable(
+                        [ListItem(Paragraph(item, body_style), leftIndent=20) for item in bullet_items],
+                        bulletType='bullet', bulletColor=colors.HexColor('#6366f1'),
+                    ))
+                    bullet_items = []
+                clean = strip_markdown(line_stripped)
+                if clean:
+                    is_heading = re.match(r'^#{1,3}\s', line_stripped) or (
+                        line_stripped.startswith('**') and line_stripped.endswith('**')
+                    )
+                    story.append(Paragraph(clean, h2_style if is_heading else body_style))
+
+        if bullet_items:
+            story.append(ListFlowable(
+                [ListItem(Paragraph(item, body_style), leftIndent=20) for item in bullet_items],
+                bulletType='bullet', bulletColor=colors.HexColor('#6366f1'),
+            ))
+
+    doc.build(story, canvasmaker=PageNumCanvas)
+    buffer.seek(0)
+    return buffer
+
 
 def render_input_field(tool_key, field_key, field_config):
     unique_key = f"{tool_key}__{field_key}"
@@ -510,6 +798,7 @@ if st.session_state.audit_results is None:
 
     if launch:
         st.session_state.stack_data = collected_data
+        st.session_state.pdf_cache = None
 
         st.markdown("---")
         progress_bar = st.progress(0)
@@ -530,7 +819,9 @@ if st.session_state.audit_results is None:
                 st.write(f"**{label}** — {desc}")
                 progress_bar.progress(i / len(agent_steps))
                 if i == 0:
+                    _start = time.time()
                     results = run_full_audit(collected_data)
+                    st.session_state.generation_time = time.time() - _start
                 time.sleep(0.3)
             progress_bar.progress(1.0)
 
@@ -543,6 +834,15 @@ else:
     # ============ RESULTS ============
 
     results = st.session_state.audit_results
+
+    # ===== GENERATION TIMER =====
+    if st.session_state.generation_time is not None:
+        gen_time_str = f"Generated in {format_elapsed(st.session_state.generation_time)}"
+        st.markdown(
+            f'<div style="text-align:right; color:#94a3b8; font-size:0.78rem; '
+            f'margin-bottom:0.5rem; font-family:Inter,sans-serif;">⏱ {gen_time_str}</div>',
+            unsafe_allow_html=True
+        )
 
     score_map = {}
     agent_keys = ["data_quality", "integration", "performance", "compliance", "optimization", "redundancy"]
@@ -682,46 +982,32 @@ else:
     </div>
     """, unsafe_allow_html=True)
 
-    report_lines = [
-        "# MarTech Stack Audit Report",
-        f"## Overall Stack Health Score: {overall_score}/10\n",
-        "---\n",
-        "## Score Summary\n",
-        "| Dimension | Score | Status |",
-        "|---|---|---|"
-    ]
-    for name, score in score_map.items():
-        status = "Healthy" if score >= 7 else ("Needs Attention" if score >= 5 else "Critical")
-        report_lines.append(f"| {name} | {score}/10 | {status} |")
-    report_lines.append("\n---\n")
-
-    if "executive_summary" in results and results["executive_summary"]["status"] == "success":
-        report_lines.append("## Executive Summary\n")
-        report_lines.append(results["executive_summary"]["output"])
-        report_lines.append("\n---\n")
-
-    for key in agent_keys:
-        if key in results and results[key]["status"] == "success":
-            report_lines.append(f"## {results[key]['label']}\n")
-            report_lines.append(results[key]["output"])
-            report_lines.append("\n---\n")
-
-    report_lines.append("## Appendix: Raw Input Data\n```")
-    report_lines.append(format_stack_data(st.session_state.stack_data))
-    report_lines.append("```")
-
-    full_report = "\n".join(report_lines)
+    gen_time_str = (
+        format_elapsed(st.session_state.generation_time)
+        if st.session_state.generation_time else "N/A"
+    )
 
     dl_col1, dl_col2, dl_col3 = st.columns([1, 2, 1])
     with dl_col2:
-        st.download_button(
-            label="Download Full Audit Report",
-            data=full_report,
-            file_name="martech_stack_audit_report.md",
-            mime="text/markdown",
-            use_container_width=True,
-            type="primary"
-        )
+        try:
+            if st.session_state.pdf_cache is None:
+                with st.spinner("Building PDF…"):
+                    pdf_buf = generate_pdf_report(
+                        results, score_map, overall_score,
+                        st.session_state.stack_data, gen_time_str
+                    )
+                    st.session_state.pdf_cache = pdf_buf.getvalue()
+            st.download_button(
+                label="⬇ Download PDF Report",
+                data=st.session_state.pdf_cache,
+                file_name="martech_audit_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+            )
+        except Exception:
+            logging.exception("PDF generation failed")
+            st.error("PDF generation failed. Please try again.")
 
     # ===== NEW AUDIT =====
 
@@ -731,6 +1017,8 @@ else:
         if st.button("Run New Audit", use_container_width=True):
             st.session_state.audit_results = None
             st.session_state.stack_data = {}
+            st.session_state.generation_time = None
+            st.session_state.pdf_cache = None
             st.rerun()
 
 # ============================================

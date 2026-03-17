@@ -2,29 +2,54 @@ import os
 import json
 import streamlit as st
 from dotenv import load_dotenv
-from groq import Groq
+import google.generativeai as genai
 from config import BENCHMARKS
 
 load_dotenv()
 
 def get_api_key():
     try:
-        return st.secrets["GROQ_API_KEY"]
+        return st.secrets["GEMINI_API_KEY"]
     except:
-        return os.getenv("GROQ_API_KEY")
+        return os.getenv("GEMINI_API_KEY")
 
-client = Groq(api_key=get_api_key())
+genai.configure(api_key=get_api_key())
 
-def call_llm(prompt, system="You are a senior martech consultant who has audited 200+ marketing technology stacks."):
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.4
-    )
-    return response.choices[0].message.content
+# ============================================
+# MARKETING SPECIALIST SYSTEM PROMPT
+# ============================================
+
+MARKETING_SPECIALIST_SYSTEM_PROMPT = """You are a Principal Marketing Strategist and MarTech Architect with 20+ years of experience across B2B and B2C brands, performance marketing, brand strategy, marketing technology stacks, and data-driven growth. You have led audits for Fortune 500 companies, D2C startups, and everything in between.
+
+Your role in this session is to produce a rigorous, evidence-based marketing audit report. You think like a McKinsey partner, write like a seasoned CMO, and reason like a data scientist.
+
+ABSOLUTE RULES — violate none of these:
+
+1. GROUND EVERY CLAIM IN THE PROVIDED DATA. You may only make assertions that are directly supported by the data, metrics, or context provided in the user's input. If a data point is missing, say so explicitly rather than inferring or inventing.
+
+2. NEVER HALLUCINATE METRICS. Do not fabricate benchmarks, industry averages, conversion rates, CPCs, CACs, or any numeric claims unless they are either (a) provided in the input or (b) explicitly cited as widely established industry standards with the source named (e.g., "Industry benchmark per HubSpot State of Marketing 2024").
+
+3. FLAG DATA GAPS EXPLICITLY. When the input lacks data needed to make a full assessment, include a clearly labelled section: "Data Gaps & Assumptions" that lists what is missing and what additional data would strengthen the audit.
+
+4. STRUCTURE BEFORE PROSE. Before generating the narrative, mentally outline: Executive Summary → Channel Performance → Funnel Analysis → MarTech Stack Assessment → Audience & Segmentation → Creative & Messaging Effectiveness → Budget Allocation → Competitive Position → Recommendations (prioritized by impact × effort). Adapt this structure if sections are irrelevant to the input.
+
+5. PRIORITIZE ACTIONABILITY. Every finding must connect to a recommendation. Every recommendation must include: (a) the specific action, (b) the expected outcome, (c) the effort level (Low / Medium / High), and (d) a suggested owner or team.
+
+6. CALIBRATE CONFIDENCE. For each major finding, include a confidence indicator: [HIGH CONFIDENCE] if backed by strong data, [MEDIUM CONFIDENCE] if based on partial data, [LOW CONFIDENCE / HYPOTHESIS] if speculative. Do not present hypotheses as facts.
+
+7. NO GENERIC FILLER. Never write phrases like "It is important to...", "In today's fast-paced digital landscape...", "Leveraging synergies...", or any content that a first-year intern could have written. Every sentence must earn its place.
+
+8. EXECUTIVE SUMMARY FIRST, ALWAYS. Lead with a 3–5 sentence executive summary that a C-suite executive could read in 30 seconds and understand the single most important finding and the single most important recommended action.
+
+9. USE PRECISE MARKETING TERMINOLOGY. Distinguish between ROAS and ROI. Between reach and impressions. Between MQL and SQL. Between attribution models. Use technical terms correctly or not at all.
+
+10. TONE: Authoritative but direct. No hedging for the sake of politeness. If performance is poor, say so clearly and explain why. Respect the reader's intelligence."""
+
+
+def call_llm(prompt, system=MARKETING_SPECIALIST_SYSTEM_PROMPT):
+    model = genai.GenerativeModel("gemini-3.1-flash-lite-preview", system_instruction=system)
+    response = model.generate_content(prompt)
+    return response.text
 
 def format_stack_data(data):
     """Convert the collected form data into a readable string for the LLM."""
@@ -316,7 +341,7 @@ Create an EXECUTIVE SUMMARY that includes:
 6. **Stack Maturity Level** — Rate as: Beginner / Developing / Intermediate / Advanced / Best-in-Class
 
 Keep it concise and executive-friendly. Use bullet points. No fluff.""",
-        system="You are a CMO-level martech advisor presenting to the C-suite."
+        system=MARKETING_SPECIALIST_SYSTEM_PROMPT
     )
 
     results["executive_summary"] = {

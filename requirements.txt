@@ -1,4 +1,6 @@
-groq
+google-generativeai
 streamlit
 python-dotenv
 plotly
+reportlab
+kaleido
